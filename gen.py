@@ -28,7 +28,7 @@ if os.environ.get('GITHUB_ACTIONS'):
     try:
         import moh_fetch; moh_fetch.main()
     except BaseException as e:
-        print('Medal of Honor fetch skipped:', e)
+        import traceback; traceback.print_exc(); print('Medal of Honor fetch skipped:', e)
 _mp = os.path.join(ROOT, 'build/moh.json')
 if os.path.exists(_mp): MOH = json.load(open(_mp))
 def _dn(s):

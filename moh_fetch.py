@@ -62,7 +62,7 @@ def main():
         ch = recs[i:i + 40]
         q = api(action='query', redirects=1, prop='pageimages', piprop='name|thumbnail', pithumbsize=400, pilicense='free', titles='|'.join(r['title'] for r in ch))['query']
         alias = {}
-        for n in q.get('normalized', []) + q.get('redirects', []): alias[n['from']] = n['to']
+        for n in (q.get('normalized') or []) + (q.get('redirects') or []): alias[n['from']] = n['to']
         pages = {p['title']: p for p in q.get('pages', [])}
         for r in ch:
             tt = alias.get(r['title'], r['title']); tt = alias.get(tt, tt)
@@ -75,15 +75,20 @@ def main():
     withimg = [r for r in recs if r.get('file')]
     for i in range(0, len(withimg), 40):
         ch = withimg[i:i + 40]
-        q = api(action='query', prop='imageinfo', iiprop='extmetadata', iiextmetadatafilter='LicenseShortName|Artist', titles='|'.join('File:' + r['file'] for r in ch))['query']
-        alias = {n['to']: n['from'] for n in q.get('normalized', [])}
+        try:
+            q = api(action='query', prop='imageinfo', iiprop='extmetadata', iiextmetadatafilter='LicenseShortName|Artist', titles='|'.join('File:' + r['file'] for r in ch))['query']
+        except Exception as e:
+            print('license lookup failed', e); continue
+        alias = {n['to']: n['from'] for n in (q.get('normalized') or [])}
         for p in q.get('pages', []):
             src = alias.get(p['title'], p['title'])
             r = next((z for z in ch if ('File:' + z['file']) in (src, p['title']) or ('File:' + z['file']).replace('_', ' ') == p['title']), None)
             if not r or not p.get('imageinfo'): continue
-            em = p['imageinfo'][0].get('extmetadata', {})
-            r['lic'] = (em.get('LicenseShortName') or {}).get('value', '')
-            r['artist'] = strip((em.get('Artist') or {}).get('value', ''))[:90]
+            em = p['imageinfo'][0].get('extmetadata') or {}
+            if not isinstance(em, dict): em = {}
+            lic, art = em.get('LicenseShortName') or {}, em.get('Artist') or {}
+            r['lic'] = lic.get('value', '') if isinstance(lic, dict) else ''
+            r['artist'] = strip(art.get('value', '') if isinstance(art, dict) else '')[:90]
             r['filepage'] = 'https://commons.wikimedia.org/wiki/' + urllib.parse.quote(p['title'].replace(' ', '_'))
         time.sleep(0.3)
     # citations
@@ -106,3 +111,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
