@@ -20,6 +20,70 @@ for r in R:
 for a in adds:
     R.append(a)
 R = [r for r in R if r['panel']]
+from extras import PHOTOS, img, CH, PEOPLE, EVENTS, ROLL_EVENTS, event_for, photo_for, chapter_for, norm_name
+
+# ---------- Medal of Honor (posthumous) ----------
+MOH = []
+if os.environ.get('GITHUB_ACTIONS'):
+    try:
+        import moh_fetch; moh_fetch.main()
+    except BaseException as e:
+        print('Medal of Honor fetch skipped:', e)
+_mp = os.path.join(ROOT, 'build/moh.json')
+if os.path.exists(_mp): MOH = json.load(open(_mp))
+def _dn(s):
+    y, m, d = map(int, s.split('-')); return datetime.date(y, m, d).toordinal()
+_by_last = collections.defaultdict(list)
+for r in R: _by_last[re.sub(r'[^A-Z]', '', r['last'])].append(r)
+moh_n = 0
+for m in MOH:
+    t = norm_name(m['name'])
+    if len(t) < 2: continue
+    md = _dn(m['date']) if m.get('date') else None
+    def ok(r):
+        if not r['death'] or md is None: return md is None
+        gap = abs(_dn(r['death']) - md)
+        lost = r['cat'] in ('DECLARED DEAD', 'PRESUMED DEAD') or r.get('inc_short') in ('POW', 'MIA', 'MSG')
+        return gap <= 400 or (lost and gap <= 3700)
+    cands = []
+    for k in range(1, min(4, len(t))):
+        for r in _by_last.get(''.join(t[-k:]), []):
+            g = norm_name(r['given'])
+            if g and g[0] == t[0] and ok(r):
+                if len(t) > 2 and len(g) > 1 and len(t[1]) >= 1 and g[1][0] != t[1][0] and k == 1: continue
+                cands.append(r)
+        if cands: break
+    if not cands and md is not None:   # same surname, same date of loss (spelling variants such as Ferenc / Frankie)
+        for k in range(1, min(4, len(t))):
+            cands = [r for r in _by_last.get(''.join(t[-k:]), []) if r['death'] and abs(_dn(r['death']) - md) <= 2]
+            if len(cands) == 1: break
+            cands = []
+    if not cands: print('MoH not on the Wall or unmatched:', m['name'], m.get('date')); continue
+    if md is not None: cands.sort(key=lambda r: abs(_dn(r['death']) - md) if r['death'] else 99999)
+    r = cands[0]
+    if 'moh' in r: print('MoH duplicate:', m['name']); continue
+    r['moh'] = m; moh_n += 1
+print('MoH matched', moh_n, 'of', len(MOH))
+
+ABBR = {'INF': 'Infantry', 'DIV': 'Division', 'BDE': 'Brigade', 'AVN': 'Aviation', 'CAV': 'Cavalry', 'ARMD': 'Armored', 'REGT': 'Regiment', 'ENGR': 'Engineer',
+        'ARTY': 'Artillery', 'GRP': 'Group', 'BN': 'Battalion', 'MED': 'Medical', 'LIGHT': 'Light', 'AIRBORNE': 'Airborne', 'AIRMOBILE': '(Airmobile)', 'SPT': 'Support',
+        'CMD': 'Command', 'ADVISORS': 'Advisers', 'MACV': 'MACV', 'US': 'U.S.', 'REP': 'Republic', 'OF': 'of', 'VIETNAM': 'Vietnam', 'AMERICAL': 'Americal', 'SPECIAL': 'Special', 'FORCES': 'Forces', 'MP': 'Military Police', 'SIG': 'Signal', 'TRANS': 'Transportation'}
+def ordinal(n):
+    n = int(n); return '%d%s' % (n, 'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th'))
+def unit_name(u):
+    if not u: return ''
+    out = []
+    for w in u.split():
+        if w.isdigit(): out.append(ordinal(w))
+        elif w in ABBR: out.append(ABBR[w])
+        else: return 'the unit recorded as “%s”' % u
+    s = ' '.join(out)
+    return s if s.startswith(('U.S.', 'MACV', 'Special')) else 'the ' + s
+by_day = collections.Counter(r['death'] for r in R)
+by_day_prov = collections.Counter((r['death'], r['prov']) for r in R)
+by_month = collections.Counter((r['death'] or '')[:7] for r in R)
+by_unit_month = collections.Counter((r['unit'], (r['death'] or '')[:7]) for r in R if r['unit'])
+for r in R: r['ev'] = event_for(r)
 
 E = html.escape
 MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
@@ -73,16 +137,18 @@ meta = {'v': V, 'panels': [{'p': p, 'n': maxline.get(p, 1)} for p in visual]}
 
 # ---------- shared chrome ----------
 FONTS = '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500&family=Tenor+Sans&display=swap" rel="stylesheet">'
-def head(title, desc, path, depth, extra=''):
+def head(title, desc, path, depth, extra='', og=''):
     up = '../' * depth
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>%s</title><meta name="description" content="%s"><link rel="canonical" href="%s/%s">'
             '<meta property="og:title" content="%s"><meta property="og:description" content="%s"><meta property="og:type" content="website"><meta property="og:url" content="%s/%s">'
-            '<meta name="theme-color" content="#0a0b0d">%s<link rel="stylesheet" href="%sassets/style.css?v=%s">%s</head><body>'
-            % (E(title), E(desc), BASE, path, E(title), E(desc), BASE, path, FONTS, up, V, extra))
+            '<meta property="og:image" content="%s"><meta name="twitter:card" content="summary_large_image">'
+            '<meta name="theme-color" content="#0a0b0d">%s<link rel="stylesheet" href="%sassets/style.css?v=%s"><script src="%sassets/site.js?v=%s" defer></script>'
+            '<script>(function(){var e=0;try{e=window.top!==window.self}catch(x){e=1}if(e){document.documentElement.className+=" embed";document.write(\'<base target="_top">\')}})()</script>%s</head><body>'
+            % (E(title), E(desc), BASE, path, E(title), E(desc), BASE, path, E(og or img('wall-reflect', 1200)), FONTS, up, V, up, V, extra))
 def topbar(depth, cur=''):
     up = '../' * depth
-    links = [('', 'The Wall'), ('states/', 'By state'), ('about/', 'About &amp; sources')]
+    links = [('', 'The Wall'), ('battles/', 'Battles'), ('medal-of-honor/', 'Medal of Honor'), ('states/', 'By state'), ('about/', 'About')]
     nav = ''.join('<a href="%s%s"%s>%s</a>' % (up, h, ' aria-current="page"' if h == cur else '', t) for h, t in links)
     return ('<header class="top"><div class="wrap"><a class="brand" href="%s">The Wall<small>Vietnam Veterans Memorial · The Lake Norman Brief</small></a>'
             '<nav>%s<a href="%s">Vietnam War history &rarr;</a></nav></div></header>' % (up, nav, HUB))
@@ -145,7 +211,8 @@ def lead(r):
     if home: s += ', of ' + E(home) + ','
     s += ' served as %s %s in the %s.' % ('an' if rank[:1] in 'AEIOU' else 'a', E(rank), E(SVC.get(r['svc'], tc(r['svc']))))
     where = ''
-    if r['prov']: where = ' in %s Province, %s' % (E(tc(r['prov'])), E(tc(r['country'])))
+    if r['prov'] and r['prov'] not in ('UNKNOWN', 'OFFSHORE'): where = ' in %s Province, %s' % (E(tc(r['prov'])), E(tc(r['country'])))
+    elif r['prov'] == 'OFFSHORE': where = ' offshore, %s' % E(tc(r['country']))
     elif r['country']: where = ' in %s' % E(tc(r['country']))
     if not r['death']:
         s += ' %s died as a result of the Vietnam War.' % he
@@ -172,6 +239,62 @@ def vvmf(r):
     q = ' '.join(x for x in [r['given'].split(' ')[0] if r['given'] else '', r['last']] if x)
     return 'https://www.vvmf.org/Wall-of-Faces/search/results/?search-term=' + q.replace(' ', '+')
 
+PROV_NAMES = {'THUA THIEN': 'Thừa Thiên', 'QUANG TRI': 'Quảng Trị', 'QUANG NAM': 'Quảng Nam', 'QUANG NGAI': 'Quảng Ngãi', 'QUANG TIN': 'Quảng Tín', 'KONTUM': 'Kon Tum', 'PLEIKU': 'Pleiku', 'BINH DUONG': 'Bình Dương', 'TAY NINH': 'Tây Ninh', 'BINH DINH': 'Bình Định', 'DINH TUONG': 'Định Tường'}
+def prov_name(p): return PROV_NAMES.get(p, tc(p))
+NUMW = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten']
+def num(n): return NUMW[n] if n < len(NUMW) else format(n, ',')
+def context(r):
+    if not r['death']: return ''
+    he, him, his = ('she', 'her', 'her') if r['sex'] == 'F' else ('he', 'him', 'his')
+    d = r['death']; ev = r.get('ev')
+    nd = by_day[d] - 1
+    paras = []
+    p = '%s %s on the Wall carry the date %s' % (num(by_day[d]).capitalize(), 'name' if by_day[d] == 1 else 'names', ldate(d))
+    if r['prov'] and r['prov'] not in ('UNKNOWN', 'OFFSHORE'):
+        k = by_day_prov[(d, r['prov'])]
+        p += ('; %s of them were lost in %s Province' % (num(k), prov_name(r['prov']))) if k > 1 else ('; %s was the only one lost in %s Province that day' % (he, prov_name(r['prov'])))
+    p += '. In %s %s, %s Americans whose names are on the Wall died in the war.' % (MONTHS[int(d[5:7]) - 1], d[:4], format(by_month[d[:7]], ','))
+    paras.append(p)
+    if r['unit'] and by_unit_month[(r['unit'], d[:7])] > 1:
+        paras.append('%s, %s unit in the record, lost %s of its members that month.' % (unit_name(r['unit'])[0].upper() + unit_name(r['unit'])[1:], his, format(by_unit_month[(r['unit'], d[:7])], ',')))
+    if ev:
+        where = ('in %s Province' % prov_name(r['prov'])) if r['prov'] and r['prov'] not in ('UNKNOWN', 'OFFSHORE') else ('in %s' % tc(r['country']) if r['country'] else '')
+        paras.append('%s died %s while %s was under way. %s %s' % (he.capitalize(), where, ev['name'][0].lower() + ev['name'][1:] if ev['name'].startswith('The ') else ev['name'], ev['text'],
+            ('The casualty record gives the province and date, not the exact place, so it does not say whether %s fell in the battle itself.' % he if r['prov'] else
+             ('The record gives the date and %s unit, %s, which fought in the battle, but not the exact place.' % (his, unit_name(r['unit'])) if r['unit'] else 'The record gives the date and branch of service but not the exact place.')) if ev.get('prov') else ''))
+    elif r['country'] in ('NORTH VIETNAM', 'LAOS', 'CAMBODIA', 'THAILAND', 'CHINA'):
+        paras.append('The record places this loss in %s, outside South Vietnam%s.' % (tc(r['country']), ' — most often the sign of an air crew lost over the North or the Ho Chi Minh Trail' if r['country'] in ('NORTH VIETNAM', 'LAOS') else ''))
+    if r.get('body') == 'N' or r['cat'] in ('DECLARED DEAD', 'PRESUMED DEAD'):
+        paras.append('%s remains had not been recovered when the 2008 record was compiled. The Defense POW/MIA Accounting Agency continues to search for Americans still missing from the war; families can find case information through <a href="https://www.dpaa.mil/" rel="noopener" target="_blank">dpaa.mil</a>.' % his.capitalize())
+    links = []
+    ch = chapter_for(d); links.append(ch)
+    if ev:
+        c2 = CH[ev['ch']]
+        if c2 != ch: links.append(c2)
+        for pkey in ev.get('people', []): links.append(PEOPLE[pkey])
+    if r['svc'] in ('AIR FORCE', 'NAVY') and (r.get('aircraft') or r['country'] in ('NORTH VIETNAM', 'LAOS')) and CH[5] not in links: links.append(CH[5])
+    u = r['unit'] or ''
+    if 'SPECIAL FORCES' in u: links.append(PEOPLE['sf'])
+    if '173' in u: links.append(PEOPLE['joel'])
+    if r['last'] == 'ANDREOTTA': links.append(PEOPLE['thompson'])
+    if r.get('body') == 'N' or r.get('inc_short') == 'POW': links.append(PEOPLE['pows'])
+    if r['st'] == 'NC' and CH[9] not in links: links.append(CH[9])
+    links.append(PEOPLE['hub'])
+    wl = []
+    if ev and ev['slug'] in ROLL_EVENTS: wl.append(('%s: the names' % ev['name'], '../../battles/%s/' % ev['slug']))
+    if r.get('moh'): wl.append(('Medal of Honor recipients on the Wall', '../../medal-of-honor/'))
+    if r['sex'] == 'F': wl.append(('The eight women on the Wall', '../../women/'))
+    if r.get('body') == 'N': wl.append(('Still unaccounted for', '../../unaccounted/'))
+    wl.append(('Remembered on %s %d' % (MONTHS[int(d[5:7]) - 1], int(d[8:])), '../../on-this-day/#%s' % d[5:].replace('-', '')))
+    if r['st'] == 'NC' and r['county'] in ('MECKLENBURG','IREDELL','CABARRUS','LINCOLN','CATAWBA','GASTON','ROWAN','UNION','STANLY'): wl.append(('Lake Norman and Charlotte-area names', '../../local/lake-norman-charlotte/'))
+    ext = [('National Archives: Vietnam War casualty statistics', 'https://www.archives.gov/research/military/vietnam-war/casualty-statistics'),
+           ('National Park Service: Vietnam Veterans Memorial', 'https://www.nps.gov/vive/'),
+           ('Vietnam Veterans Memorial Fund: Wall of Faces', vvmf(r))]
+    li = lambda xs, ext=False: ''.join('<li><a href="%s"%s>%s</a></li>' % (E(u), ' rel="noopener" target="_blank"' if ext else '', E(t)) for t, u in xs)
+    return ('<section class="box ctx"><p class="kick">Context &middot; from the records</p><h2>What was happening</h2>%s'
+            '<div class="ctx-links"><div><h3>Read the history</h3><ul>%s</ul></div><div><h3>On the Wall</h3><ul>%s</ul></div><div><h3>Elsewhere</h3><ul>%s</ul></div></div></section>') % (
+            ''.join('<p>%s</p>' % x for x in paras), li(links), li(wl), li(ext, True))
+
 def profile(r):
     d = 2
     rank = rank_full(r['svc'], r['rank'])
@@ -196,7 +319,7 @@ def profile(r):
     crows = []
     if r['death']: crows.append(('Date of loss' if r['cat'] in ('DECLARED DEAD','PRESUMED DEAD') else 'Date of death', ldate(r['death'])))
     if r['age'] and r['cat'] not in ('DECLARED DEAD','PRESUMED DEAD'): crows.append(('Age', str(r['age'])))
-    if r['prov']: crows.append(('Province', tc(r['prov'])))
+    if r['prov'] and r['prov'] != 'UNKNOWN': crows.append(('Province', tc(r['prov'])))
     if r['country']: crows.append(('Country', tc(r['country'])))
     if r.get('src') != 'vvmf':
         crows.append(('Casualty type', hos))
@@ -233,13 +356,33 @@ def profile(r):
         portrait = '<img src="%s" alt="%s" loading="lazy">' % (E(ph['src']), E(r['display']))
         portrait_attr = ''
         photo_credit = 'Photograph: %s' % E(ph.get('credit', ''))
+    moh = r.get('moh')
+    if moh and moh.get('thumb') and not photo_credit:
+        portrait = '<img src="%s" alt="%s" loading="lazy" referrerpolicy="no-referrer">' % (E(moh['thumb']), E(r['display']))
+        portrait_attr = ''
+        photo_credit = 'Portrait: %s%s, via <a href="%s" rel="noopener" target="_blank">Wikimedia Commons</a>.' % (
+            E(moh.get('artist') or 'U.S. armed forces'), (', ' + E(moh['lic'])) if moh.get('lic') else '', E(moh.get('filepage') or ('https://en.wikipedia.org/wiki/' + moh.get('page', '').replace(' ', '_'))))
+    if moh:
+        cit = '\n'.join('<p>%s</p>' % E(p) for p in (moh.get('cit') or '').split('\n') if len(p.strip()) > 2)
+        wl = 'https://en.wikipedia.org/wiki/' + moh.get('page', moh['name']).replace(' ', '_')
+        story = ('<section class="box prose moh-box"><p class="kick">Medal of Honor &middot; awarded posthumously</p><h2>For conspicuous gallantry</h2>'
+                 '<p>%s received the Medal of Honor, the nation&rsquo;s highest award for valor, for %s actions%s. %s</p>' % (
+                     E(r['display']), he, (' on ' + E(ldate(moh['date']))) if moh.get('date') else '', 'The official citation reads:' if cit else '') +
+                 ('<blockquote class="citation">%s</blockquote>' % cit if cit else '') +
+                 '<p class="note">Citation text as reproduced in <a href="%s" rel="noopener" target="_blank">Wikipedia&rsquo;s article on %s</a>; Medal of Honor citations are official U.S. government records. See also the <a href="https://www.cmohs.org/" rel="noopener" target="_blank">Congressional Medal of Honor Society</a> and <a href="../../medal-of-honor/">all Medal of Honor recipients on the Wall</a>.</p></section>' % (E(wl), E(r['display']))) + story
+    ev = r.get('ev')
+    pk = photo_for(r, ev)
+    pf, pcap, pcred = PHOTOS[pk]
+    hero = ('<figure class="pf-bg" data-full="%s" tabindex="0" role="button" aria-label="Enlarge photograph"><img src="%s" srcset="%s 800w, %s 1600w" sizes="100vw" alt="%s" decoding="async" fetchpriority="high">'
+            '<figcaption class="wrap"><span>%s Photo: %s.</span> <em>Shown for the time and place, not a photograph of %s.</em></figcaption></figure>') % (
+            E(img(pk, 2200)), E(img(pk, 1600)), E(img(pk, 800)), E(img(pk, 1600)), E(pcap), E(pcap), E(pcred), E(r['display']))
     share = SHARE + '?name=' + r['wall'].replace(' ', '+') + '&panel=' + pn + '&line=' + str(r['line'])
-    body = (topbar(d) + '<main class="wrap">'
+    body = (topbar(d) + hero + '<main class="wrap pf-main">'
         '<p class="crumbs"><a href="../../">The Wall</a> &rsaquo; <a href="../../?p=%s">Panel %s</a>%s &rsaquo; %s</p>' % (r['panel'], pn,
             (' &rsaquo; <a href="../../states/%s/">%s</a>' % (r['st'].lower(), E(STATES.get(r['st'], r['st'])))) if r['st'] in STATES else '', E(r['display'])) +
         '<section class="pf-head"><div class="portrait"%s>%s</div><div>'
         '<h1>%s</h1><p class="pf-sub">%s &middot; %s</p><p class="pf-dates">%s%s</p><span class="badge">%s</span></div></section>' % (
-            portrait_attr, portrait, E(r['wall']), E(rank), E(svc), (E(ldate(r['birth'])) + ' &ndash; ') if r['birth'] else '', E(ldate(r['death'])), 'Story' if story else 'Service record') +
+            portrait_attr, portrait, E(r['wall']), E(rank), E(svc), (E(ldate(r['birth'])) + ' &ndash; ') if r['birth'] else '', E(ldate(r['death'])), ('Medal of Honor</span> <span class="badge">Story' if moh else ('Story' if story else 'Service record'))) +
         (('<p class="note" style="margin:-4px 0 0">%s</p>' % photo_credit) if photo_credit else '') +
         '<p class="lead">%s</p>' % lead(r) + story +
         '<div class="grid2"><div class="box"><h2>On the Wall</h2><p class="where">Panel %s &middot; Line %d</p>'
@@ -251,17 +394,18 @@ def profile(r):
         '<div class="acts"><a class="btn gold" href="%s">Share a photo or memory</a><a class="btn" href="%s" rel="noopener" target="_blank">Photos &amp; remembrances on VVMF&rsquo;s Wall of Faces &#8599;</a></div></div></div>' % (
             pn, r['line'], pn, x, y, r['panel'], r['slug'], 'her' if r['sex'] == 'F' else 'him', E(share), E(vvmf(r))) +
         '<div class="grid2"><div class="box"><h2>Service</h2>%s</div><div class="box"><h2>Casualty</h2>%s</div></div>' % (dl(rows), dl(crows)) +
+        context(r) +
         ('<div class="grid2">%s</div>' % rel if rel else '') +
         '<div class="src"><p><strong>Source.</strong> ' + (('This name was added to the Wall in %s, after the 2008 Department of Defense casualty file used for most of this site was compiled. Panel, line and the details above are as listed for this name on the Vietnam Veterans Memorial Fund&rsquo;s Wall of Faces. ' % (r.get('added') or 'a later year')) if r.get('src') == 'vvmf' else
         'U.S. Department of Defense, Defense Casualty Analysis System, Vietnam Conflict Extract Data File (as of April 29, 2008), '
         'Records of the Office of the Secretary of Defense, Record Group 330, National Archives (NAID 2240992). Panel and line as recorded in that file' + ('; panel and line confirmed against the Vietnam Veterans Memorial Fund&rsquo;s Wall of Faces because the federal record was incomplete' if r['wall'] in fixes else '') + '. ') +
-        'This page presents the official record only; no biography has been written for %s yet. See something wrong? <a href="../../about/#corrections">Report a correction</a>.</p></div>'
-        '</main>' % ('her' if r['sex'] == 'F' else 'him') +
+        ('The Medal of Honor citation above is the official account of %s actions. ' % he if moh else 'This page presents the official record and its historical context; no biography has been written for %s yet. ' % ('her' if r['sex'] == 'F' else 'him')) + 'See something wrong? <a href="../../about/#corrections">Report a correction</a>.</p></div>'
+        '</main>' +
         '<script type="application/ld+json">%s</script>' % json.dumps(ld) +
         '<script>(function(){var k="candle:%s",c=document.getElementById("candle"),b=document.getElementById("light");function on(){c.classList.add("lit");b.textContent="A candle is lit";b.disabled=true;}'
         'try{if(localStorage.getItem(k))on();}catch(e){}b.onclick=function(){on();try{localStorage.setItem(k,"1")}catch(e){}};})();</script>' % r['slug'] +
         foot(d))
-    write('name/%s/index.html' % r['slug'], head(title, desc, 'name/%s/' % r['slug'], d) + body)
+    write('name/%s/index.html' % r['slug'], head(title, desc, 'name/%s/' % r['slug'], d, og=(moh or {}).get('thumb') or img(pk, 1200)) + body)
 
 todo = R[:LIMIT] if LIMIT else R
 for i, r in enumerate(todo):
@@ -313,22 +457,43 @@ stats = [(format(N, ','), 'names in this record'), (format(cnt['ARMY'], ','), 'U
          (str(sorted(ages)[len(ages)//2]), 'median age at death'), (str(sum(1 for r in R if r['sex'] == 'F')), 'women')]
 stat_html = ''.join('<div class="stat"><b>%s</b><span>%s</span></div>' % s for s in stats)
 
+
+def fcard(href, key, small, title, em):
+    return '<a class="fcard" href="%s"><img src="%s" alt="" loading="lazy"><span><small>%s</small><b>%s</b><em>%s</em></span></a>' % (href, E(img(key, 800)), small, title, em)
+_nc = sum(1 for r in R if r['st'] == 'NC')
+FEATURES = (fcard('battles/', 'hue-tank', 'Ia Đrăng to the Mayaguez', 'Battles and campaigns', 'The names, battle by battle') +
+    fcard('medal-of-honor/', 'wall-wreath', 'Awarded posthumously', 'Medal of Honor', '%d recipients, with their citations' % sum(1 for r in R if r.get('moh'))) +
+    fcard('on-this-day/', 'wall-flag', 'Every day of the year', 'On this day', 'The names lost on each date') +
+    fcard('women/', 'womens-memorial', 'Nurses', 'The eight women', 'Seven Army nurses and one Air Force nurse') +
+    fcard('unaccounted/', 'pow-vigil', 'POW / MIA', 'Still unaccounted for', '%s names whose remains were not recovered' % format(sum(1 for r in R if r.get('body') == 'N'), ',')) +
+    fcard('states/nc/', 'nc-memorial', 'North Carolina', 'North Carolina&rsquo;s names', '%s names, by hometown' % format(_nc, ',')) +
+    fcard('local/lake-norman-charlotte/', 'wall-names', 'Mecklenburg, Iredell and neighbors', 'Lake Norman &amp; Charlotte', 'Names from nine counties') +
+    fcard(HUB, 'army-assault', 'The Lake Norman Brief', 'The history of the war', 'Nine chapters, maps, people and units'))
+
 # ---------- home / the Wall ----------
+HERO_KEYS = ['wall-reflect', 'wall-trace', 'iadrang', 'hue', 'khesanh-air', 'navy-swift', 'af-b52', 'homecoming', 'wall-wreath']
 home = (head('The Wall — every name on the Vietnam Veterans Memorial | The Lake Norman Brief',
         'Scroll the full Vietnam Veterans Memorial, panel by panel. Hover over a name to read it, and select it to open that service member\'s record and remembrance page.', '', 0) +
     topbar(0, '') +
-    '<section class="hero wrap"><h1>The Wall</h1><p>Every name on the Vietnam Veterans Memorial, in the order they were taken from us. Scroll along the Wall, hover over a name and it turns to gold; select it to remember the person behind it.</p></section>'
+    '<section class="hero-photo" id="hero">%s<div class="hero-shade"></div><div class="hero-in wrap"><p class="kick">Vietnam Veterans Memorial &middot; 1959 &ndash; 1975</p><h1>The Wall</h1>'
+    '<p>Every name on the Vietnam Veterans Memorial, in the order they were taken from us. Scroll along the Wall, hover over a name and it turns to gold; select it to remember the person behind it.</p>'
+    '<p class="hero-go"><a class="btn gold" href="#scroller">Walk the Wall</a> <a class="btn" href="on-this-day/">Remembered today</a> <a class="btn" href="medal-of-honor/">Medal of Honor</a></p></div>'
+    '<p class="hero-cap wrap" id="hcap" aria-live="polite"></p><div class="hero-dots" id="hdots"></div></section>'
+    '<script>window.HERO=%s;</script>' % (''.join('<img class="hs%s" src="%s" srcset="%s 800w, %s 1600w" sizes="100vw" alt="%s"%s>' % (' on' if i == 0 else '', E(img(k, 1600)), E(img(k, 800)), E(img(k, 1600)), E(PHOTOS[k][1]), '' if i == 0 else ' loading="lazy"') for i, k in enumerate(HERO_KEYS)),
+        json.dumps([[PHOTOS[k][1], PHOTOS[k][2]] for k in HERO_KEYS])) +
     '<div class="controls"><div class="wrap"><div class="search"><input id="q" type="search" placeholder="Find a name or hometown…" autocomplete="off" aria-label="Find a name or hometown"><div class="results" id="res" role="listbox"></div></div>'
     '<div class="zoom"><button class="btn" id="zout" aria-label="Zoom out">&minus;</button><input id="zoom" type="range" min="0" max="100" value="0" aria-label="Zoom"><button class="btn" id="zin" aria-label="Zoom in">+</button></div>'
     '<div class="jump"><button class="btn" data-go="70W">West end</button><button class="btn" data-go="01E">Apex &middot; 1959</button><button class="btn" data-go="70E">East end</button></div>'
     '<p class="hint">Drag or scroll to move along the Wall · Ctrl + scroll or the slider to zoom · Hover a name for details, select it to open the page</p></div></div>'
     '<div id="scroller" aria-label="The Vietnam Veterans Memorial, all 140 inscribed panels"><div id="wall"></div></div><div id="tip" role="tooltip"></div>'
-    '<main class="wrap"><div class="stats">%s</div>'
+    '<main class="wrap"><div class="stats">' + stat_html + '</div>'
+    '<section class="today"><div class="today-h"><p class="kick">Remembered today</p><h2 id="tdh">Lost on this date</h2><a href="on-this-day/" id="tdall">All names for this date &rarr;</a></div><div class="ncards" id="tdl"></div></section>'
+    '<h2 class="sec-h">Explore the Wall</h2><div class="fcards">' + FEATURES + '</div>'
     '<div class="intro"><div><h2>How to read the Wall</h2><p>The names begin at the apex, at the top of Panel 1E, with the first deaths in 1959. They continue to the east end at Panel 70E, resume at the far west end at Panel 70W, and return to the apex, ending at the bottom of Panel 1W in 1975. The beginning and the end meet at the center.</p></div>'
     '<div><h2>Each name has a page</h2><p>Select any name to see the official service record: rank and branch, unit, hometown, date and place of loss, and the panel and line where the name is inscribed. Families and friends can share a photograph or a memory, and every submission is reviewed before it appears.</p></div>'
     '<div><h2>Where the records come from</h2><p>The names and records come from the Department of Defense casualty file preserved by the National Archives. Nothing on a name page is invented. When a fuller story has been researched from sources, it will be marked <em>Story</em>; until then, the page is marked <em>Service record</em>. <a href="about/">Read more</a>.</p></div></div>'
     '<p style="margin-top:28px"><a class="btn" href="states/">Browse names by state</a> <a class="btn" href="local/lake-norman-charlotte/">Lake Norman &amp; Charlotte area</a> <a class="btn" href="%s">The Vietnam War on The Lake Norman Brief &rarr;</a></p></main>'
-    '<script>window.WALL_META=%s;</script><script src="assets/wall.js?v=%s" defer></script>' % (stat_html, HUB, json.dumps(meta, separators=(',', ':')), V) + foot(0))
+    '<script>window.WALL_META=%s;</script><script src="assets/wall.js?v=%s" defer></script><script src="assets/home.js?v=%s" defer></script>' % (HUB, json.dumps(meta, separators=(',', ':')), V, V) + foot(0))
 write('index.html', home)
 
 # ---------- about ----------
@@ -343,6 +508,90 @@ write('about/index.html', head('About this remembrance and its sources | The Wal
  '<h2 id="corrections">Corrections</h2><p>If you find an error, or if you are a family member who would like a page changed, please write through the <a href="%s">Share a photo or memory</a> form and tell us which name and what should change. We will check it against the record and reply.</p>'
  '<h2>Who made this</h2><p>The Wall is published by <a href="https://lkn-law.com/">The Lake Norman Brief</a>, the history and legal-education site of Adkins Law, PLLC, in Mooresville and Huntersville, North Carolina. It is an independent remembrance and is not affiliated with the Vietnam Veterans Memorial Fund, the National Park Service, or the Department of Defense.</p></main>' % (len(adds), format(N, ','), SHARE) + foot(1))
 
+
+FILTER_JS = ('<script>(function(){var f=document.getElementById("flt"),c=document.getElementById("cnt"),a=[].slice.call(document.querySelectorAll("#list .ncard"));'
+    'function u(){var q=f.value.toLowerCase().trim(),n=0;a.forEach(function(x){var s=!q||x.textContent.toLowerCase().indexOf(q)>-1;x.style.display=s?"":"none";if(s)n++});c.textContent=n+" shown"}f.oninput=u;u()})();</script>')
+
+# ---------- feature pages ----------
+def photo_band(key, title, kicker, intro, depth):
+    pf, cap, cred = PHOTOS[key]
+    return ('<section class="band"><img src="%s" srcset="%s 800w, %s 1600w" sizes="100vw" alt="%s"><div class="band-in wrap"><p class="kick">%s</p><h1>%s</h1><p>%s</p></div>'
+            '<p class="band-cap wrap">%s Photo: %s.</p></section>') % (E(img(key, 1600)), E(img(key, 800)), E(img(key, 1600)), E(cap), kicker, title, intro, E(cap), E(cred))
+def name_card(x, depth, extra=''):
+    m = x.get('moh') or {}
+    pic = ('<img src="%s" alt="" loading="lazy" referrerpolicy="no-referrer">' % E(m['thumb'])) if m.get('thumb') else FLAG
+    home = ', '.join(z for z in [tc(x['city']), x['st']] if z)
+    return ('<a class="ncard" href="%sname/%s/"><span class="ncard-pic">%s</span><span class="ncard-t"><b>%s</b><small>%s &middot; %s</small><small>%s%s</small>%s</span></a>' % (
+        '../' * depth, x['slug'], pic, E(x['display']), E(rank_full(x['svc'], x['rank'])), E(SVC.get(x['svc'], tc(x['svc']))), E(ldate(x['death'])), (' &middot; ' + E(home)) if home else '', extra))
+def simple_page(path, depth, title, desc, band, body, og_key):
+    write(path + 'index.html', head(title, desc, path, depth, og=img(og_key, 1200)) + topbar(depth, path if depth == 1 else '') + band + '<main class="wrap">' + body + '</main>' + foot(depth))
+
+# Medal of Honor
+moh_list = sorted([r for r in R if r.get('moh')], key=lambda r: r['death'] or '')
+simple_page('medal-of-honor/', 1, 'Medal of Honor recipients on the Vietnam Veterans Memorial (%d) | The Wall' % len(moh_list),
+    'The %d service members on the Vietnam Veterans Memorial who received the Medal of Honor posthumously, with their citations.' % len(moh_list),
+    photo_band('wall-wreath', 'Medal of Honor', 'Awarded posthumously', '%d of the names on the Wall belong to men who received the Medal of Honor, the nation&rsquo;s highest award for valor, after they were killed. Each page carries the official citation.' % len(moh_list), 1),
+    '<div class="tools"><input id="flt" type="search" placeholder="Filter by name, branch, state or year…" aria-label="Filter"><span id="cnt"></span></div><div class="ncards" id="list">%s</div>' % ''.join(name_card(r, 1) for r in moh_list) +
+    '<p class="note">Portraits appear where a freely licensed or public-domain photograph is available on Wikimedia Commons. Citations are official U.S. government records. Read the history in <a href="%s">The Vietnam War on The Lake Norman Brief</a>.</p>' % HUB + FILTER_JS, 'wall-wreath')
+
+# The eight women
+women = sorted([r for r in R if r['sex'] == 'F'], key=lambda r: r['death'] or '')
+simple_page('women/', 1, 'The eight women on the Vietnam Veterans Memorial | The Wall', 'The eight American servicewomen whose names are on the Vietnam Veterans Memorial.',
+    photo_band('womens-memorial', 'The eight women', 'On the Wall', 'Eight American servicewomen are named on the Wall, seven Army nurses and one Air Force nurse. Roughly 11,000 military women served in Vietnam, most of them nurses; the Vietnam Women&rsquo;s Memorial near the Wall honors them.', 1),
+    '<div class="ncards">%s</div>' % ''.join(name_card(r, 1) for r in women), 'womens-memorial')
+
+# Unaccounted for
+unacc = sorted([r for r in R if r.get('body') == 'N'], key=lambda r: (r['death'] or '', r['last']))
+by_yr = collections.OrderedDict()
+for r in unacc: by_yr.setdefault((r['death'] or '????')[:4], []).append(r)
+simple_page('unaccounted/', 1, 'Still unaccounted for: names on the Wall whose remains were not recovered | The Wall',
+    'Names on the Vietnam Veterans Memorial whose remains had not been recovered as of the 2008 Department of Defense record.',
+    photo_band('pow-vigil', 'Still unaccounted for', 'POW / MIA', '%s names on the Wall belonged to men whose remains had not been recovered when the 2008 Defense Department record was compiled. Some have since been identified by the Defense POW/MIA Accounting Agency; about 1,566 Americans from the war are still listed as unaccounted for.' % format(len(unacc), ','), 1),
+    '<p class="note">Year: %s</p>' % ' &middot; '.join('<a href="#y%s">%s</a>' % (y, y) for y in by_yr) +
+    ''.join('<div class="city" id="y%s"><h3>%s <small style="color:var(--dim);font-size:14px">%d</small></h3><ul class="names">%s</ul></div>' % (y, y, len(v), ''.join(name_li(r, 1, '%s · %s · %s' % (rank_full(r['svc'], r['rank']), ldate(r['death']), tc(r['country']))) for r in v)) for y, v in by_yr.items()) +
+    '<p class="note">For case information, see the <a href="https://www.dpaa.mil/" rel="noopener" target="_blank">Defense POW/MIA Accounting Agency</a> and <a href="%s">The Hanoi Hilton and the POWs</a>.</p>' % PEOPLE['pows'][1], 'pow-vigil')
+
+# Battles
+bat_cards = ''
+for slug in ROLL_EVENTS:
+    ev = next(e for e in EVENTS if e['slug'] == slug)
+    names = sorted([r for r in R if (r.get('ev') or {}).get('slug') == slug], key=lambda r: (r['death'], r['last']))
+    if not names: continue
+    places = (', '.join(prov_name(p) for p in sorted(ev['prov'])) + ' Province' + ('s' if len(ev['prov']) > 1 else '')) if ev.get('prov') else ', '.join(tc(c) for c in sorted(ev.get('country') or [])) or 'the record'
+    days = collections.OrderedDict()
+    for r in names: days.setdefault(r['death'], []).append(r)
+    ch = CH[ev['ch']]
+    extra_links = ''.join('<a class="btn" href="%s">%s &rarr;</a> ' % (E(PEOPLE[p][1]), E(PEOPLE[p][0])) for p in ev.get('people', []))
+    simple_page('battles/%s/' % slug, 2, '%s: the names on the Wall (%d) | The Wall' % (ev['name'], len(names)),
+        'The %d names on the Vietnam Veterans Memorial whose records place their deaths in %s during %s, %s to %s.' % (len(names), places, ev['name'], ldate(ev['start']), ldate(ev['end'])),
+        photo_band(ev['photo'], E(ev['name']), '%s &ndash; %s &middot; names from %s' % (ldate(ev['start']), ldate(ev['end']), places), E(ev['text']), 2),
+        '<p class="acts"><a class="btn gold" href="%s">Read %s &rarr;</a> %s<a class="btn" href="../">All battles</a></p>' % (E(ch[1]), E(ch[0]), extra_links) +
+        '<p class="note">This roll lists the %s names whose official records place the death in %s between %s and %s. The records give the province and the date, not the exact place, so not everyone listed fell in the battle itself.</p>' % (format(len(names), ','), places, ldate(ev['start']), ldate(ev['end'])) +
+        ''.join('<div class="city"><h3>%s <small style="color:var(--dim);font-size:14px">%d</small></h3><div class="ncards">%s</div></div>' % (ldate(dd), len(v), ''.join(name_card(r, 2) for r in v)) for dd, v in days.items()), ev['photo'])
+    bat_cards += '<a class="fcard" href="%s/"><img src="%s" alt="" loading="lazy"><span><small>%s &ndash; %s</small><b>%s</b><em>%s names</em></span></a>' % (slug, E(img(ev['photo'], 800)), ldate(ev['start'])[-4:], ldate(ev['end'])[-4:], E(ev['name']), format(len(names), ','))
+simple_page('battles/', 1, 'Battles and campaigns: the names on the Wall | The Wall', 'The names on the Vietnam Veterans Memorial lost in the war’s major battles and campaigns, from Ia Đrăng to the Mayaguez.',
+    photo_band('hue-tank', 'Battles and campaigns', 'From Ia Đrăng to the Mayaguez', 'Select a battle to see the names of those whose records place their deaths there, and to read its history on The Lake Norman Brief.', 1),
+    '<div class="fcards">%s</div>' % bat_cards, 'hue-tank')
+
+# On this day
+os.makedirs(os.path.join(OUT, 'data/days'), exist_ok=True)
+days_ = collections.defaultdict(list)
+for r in R:
+    if r['death']: days_[r['death'][5:].replace('-', '')].append([r['slug'], r['wall'], r['death'][:4], rank_full(r['svc'], r['rank']), tc(r['city']), r['st'], 1 if r.get('moh') else 0])
+for k, v in days_.items():
+    json.dump(v, open(os.path.join(OUT, 'data/days/%s.json' % k), 'w'), separators=(',', ':'))
+simple_page('on-this-day/', 1, 'On this day: names on the Vietnam Veterans Memorial lost on each date | The Wall', 'Remember the names on the Vietnam Veterans Memorial who were lost on this day of the year.',
+    photo_band('wall-flag', 'On this day', 'Remembrance', 'The names on the Wall lost on this date in every year of the war. Choose another date to remember others.', 1),
+    '<div class="tools"><label>Date <input type="date" id="day"></label> <button class="btn" id="prev">&larr; Previous day</button> <button class="btn" id="next">Next day &rarr;</button> <span id="cnt"></span></div><div class="ncards" id="list"></div>'
+    '<script>(function(){var M=["January","February","March","April","May","June","July","August","September","October","November","December"],inp=document.getElementById("day"),L=document.getElementById("list"),C=document.getElementById("cnt"),d=new Date();'
+    'var h=location.hash.slice(1);if(/^\\d{4}$/.test(h))d=new Date(2000,+h.slice(0,2)-1,+h.slice(2));'
+    'function key(x){return String(x.getMonth()+1).padStart(2,"0")+String(x.getDate()).padStart(2,"0")}'
+    'function show(){inp.value="2000-"+key(d).slice(0,2)+"-"+key(d).slice(2);history.replaceState(null,"","#"+key(d));L.innerHTML="<p class=note>Loading…</p>";'
+    'fetch("../data/days/"+key(d)+".json").then(function(r){return r.ok?r.json():[]}).then(function(v){C.textContent=v.length+" names on "+M[d.getMonth()]+" "+d.getDate();'
+    'L.innerHTML=v.map(function(x){return \'<a class="ncard" href="../name/\'+x[0]+\'/"><span class="ncard-t"><b>\'+x[1]+(x[6]?\' <i class="medal" title="Medal of Honor">★</i>\':"")+\'</b><small>\'+x[3]+\' · \'+x[2]+\'</small><small>\'+[x[4],x[5]].filter(Boolean).join(", ")+\'</small></span></a>\'}).join("")||"<p class=note>No names for this date.</p>"})}'
+    'inp.onchange=function(){var p=inp.value.split("-");if(p.length==3){d=new Date(2000,+p[1]-1,+p[2]);show()}};'
+    'document.getElementById("prev").onclick=function(){d.setDate(d.getDate()-1);show()};document.getElementById("next").onclick=function(){d.setDate(d.getDate()+1);show()};show()})();</script>', 'wall-flag')
+
 # ---------- misc ----------
 write('404.html', head('Page not found | The Wall', 'Page not found.', '404.html', 0) + topbar(0) + '<main class="wrap" style="padding:60px 16px"><h1>That page was not found</h1><p><a href="/">Return to the Wall</a> or search for a name there.</p></main>' + foot(0).replace('href="about/"', 'href="/about/"'))
 write('CNAME', 'wall.lkn-law.com\n')
@@ -354,3 +603,6 @@ for i, c in enumerate(chunks):
     write('sitemap-%d.xml' % (i+1), '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join('<url><loc>%s</loc></url>' % u for u in c) + '</urlset>')
 write('sitemap.xml', '<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join('<sitemap><loc>%s/sitemap-%d.xml</loc></sitemap>' % (BASE, i+1) for i in range(len(chunks))) + '</sitemapindex>')
 print('names', N, 'panels', len(panels), 'states', len(st_list))
+for _f in ('site.js', 'home.js', 'style.css', 'wall.js'):
+    if os.path.exists(os.path.join(ROOT, _f)):
+        os.makedirs(os.path.join(OUT, 'assets'), exist_ok=True); shutil.copy(os.path.join(ROOT, _f), os.path.join(OUT, 'assets', _f))

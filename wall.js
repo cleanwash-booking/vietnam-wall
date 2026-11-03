@@ -1,3 +1,4 @@
+function go(u){ try{ if(document.documentElement.classList.contains('embed')){ window.open(new URL(u, location.href).href, '_top'); return; } }catch(e){} location.href = u; }
 (function(){
   'use strict';
   var META = window.WALL_META;               // {panels:[{p:'70W',n:1},...], order:[...], v:'..'}
@@ -150,9 +151,9 @@
       if (armed !== t){ e.preventDefault(); armed && armed.classList.remove('hl'); armed = t; t.classList.add('hl');
         touch = true; card(t._r); tip.classList.add('on','touch'); place(e.clientX, e.clientY); return; }
     }
-    location.href = 'name/' + t._r[0] + '/';
+    go('name/' + t._r[0] + '/');
   });
-  wall.addEventListener('keydown', function(e){ var t = e.target.closest('.nm'); if (t && e.key === 'Enter') location.href = 'name/' + t._r[0] + '/'; });
+  wall.addEventListener('keydown', function(e){ var t = e.target.closest('.nm'); if (t && e.key === 'Enter') go('name/' + t._r[0] + '/'); });
   wall.addEventListener('focusin', function(e){ var t = e.target.closest('.nm'); if (!t) return; touch=false; card(t._r); var r=t.getBoundingClientRect(); tip.classList.add('on'); place(r.left, r.bottom); });
   scroller.addEventListener('scroll', function(){ if (!touch) tip.classList.remove('on'); }, {passive:true});
   document.addEventListener('click', function(e){ if (touch && !e.target.closest('.nm') && !e.target.closest('#tip')){ tip.classList.remove('on','touch'); armed && armed.classList.remove('hl'); armed=null; } });
