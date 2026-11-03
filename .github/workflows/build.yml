@@ -1,0 +1,65 @@
+name: Build and publish the Wall
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Arrange build folders
+        run: |
+          mkdir -p build raw
+          cp *.py *.json *.tsv *.txt build/
+          if [ -d stories ]; then mkdir -p build/stories && cp -r stories/. build/stories/; fi
+          if [ -d photos ]; then mkdir -p build/photos && cp -r photos/. build/photos/; fi
+
+      - name: Load the casualty records
+        run: |
+          if [ -f records.json.gz ]; then
+            gunzip -c records.json.gz > build/records.json
+          else
+            curl -fsSL --retry 5 -o raw/DCAS.VN.EXT08.DAT https://catalog.archives.gov/medialz/electronic-records/rg-330/dcase/DCAS.VN.EXT08.DAT
+            python build/clean.py
+          fi
+
+      - name: Build the site
+        run: |
+          python build/additions.py
+          python build/gen.py
+          mkdir -p site/assets
+          cp style.css wall.js site/assets/
+          du -sh --apparent-size site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
