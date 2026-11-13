@@ -48,3 +48,11 @@
     im.addEventListener('click', function(){ open(im.src.replace(/\/(\d+)px-/, '/800px-'), im.alt); });
   });
 })();
+
+/* Protected, live family remembrances. WordPress stores and screens submissions. */
+(function(){
+  var script = document.createElement('script');
+  script.src = 'https://lkn-law.com/wp-content/plugins/lkn-wall-memories/assets/memories.js?v=1.0.0';
+  script.defer = true;
+  document.head.appendChild(script);
+})();
