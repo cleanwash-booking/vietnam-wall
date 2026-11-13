@@ -235,3 +235,6 @@ i.medal{font-style:normal;color:var(--gold)}
   .pf-bg figcaption em{display:none}
   .tools input{min-width:0;width:100%}
 }
+
+/* Respect pagination visibility when button styling sets display. */
+#shared-memories [hidden]{display:none!important}
